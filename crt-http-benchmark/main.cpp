@@ -89,6 +89,7 @@ class BenchmarkRunner
 
         aws_tls_connection_options tlsConnOpts;
         aws_tls_connection_options_init_from_ctx(&tlsConnOpts, tlsCtx);
+        aws_tls_connection_options_set_server_name(&tlsConnOpts, alloc, aws_uri_host_name(&this->uri));
 
         aws_socket_options sockOpts;
         AWS_ZERO_STRUCT(sockOpts);
