@@ -150,6 +150,7 @@ class BenchmarkRunner
             double gigabits = bits / 1000000000.0;
             double gigabitsPerSec = gigabits / elapsedSecs.count();
             printf("Secs:%d Gb/s:%f\n", sec + 1, gigabitsPerSec);
+            fflush(stdout);
         }
         this->isRunning.store(false);
 
