@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+import psutil
 import re
 import subprocess
-import statistics
+from statistics import median
 
 REPO_DIR = Path(__file__).parent.parent
 CLIENTS = {
@@ -18,94 +19,80 @@ CLIENTS = {
 parser = argparse.ArgumentParser("Gather data from HTTP benchmarks")
 parser.add_argument(
     '--clients', nargs='+', choices=CLIENTS.keys(), default=CLIENTS.keys(),
-    help='HTTP clients to benchmark')
+    help='List of HTTP clients to test')
 parser.add_argument(
-    '--min-concurrency', type=int, default=1,
-    help='Minimum concurrency to test')
+    '--concurrencies', nargs="+", type=int,
+    default=[1, 10, 50, 100, 150, 200, 225, 250, 275, 300, 500, 1000],
+    help='List of concurrency numbers to test')
 parser.add_argument(
-    '--max-concurrency', type=int, default=1024,
-    help='Maximum concurrency to test')
-parser.add_argument(
-    '--samples', type=int, default=10,
-    help='Num samples per run')
+    '--secs', type=int, default=20,
+    help='Num seconds to run each test')
 parser.add_argument(
     '--csv', default='out.csv',
-    help='output results to this file')
+    help='Output results to this file')
 parser.add_argument(
     '--url', default='s3://graebm-s3-benchmarks/download/8MiB-1x/1',
     help='URL of object to be downloaded. s3:// URLS will get presigned.')
 
 
-def run(cmd_args: list[str], check=True) -> subprocess.CompletedProcess:
-    """Run a subprocess"""
+def run(cmd_args: list[str], check=True):
+    print(f'{Path.cwd()}> {subprocess.list2cmdline(cmd_args)}', flush=True)
+    return subprocess.run(cmd_args, check=check, text=True, capture_output=True)
+
+
+def run_benchmark(cmd_args: list[str]):
     print(f'{Path.cwd()}> {subprocess.list2cmdline(cmd_args)}', flush=True)
 
-    # Subprocess doesn't have built-in support for capturing output
-    # AND printing while it comes in, so we have to do it ourselves.
-    # We're combining stderr with stdout, for simplicity.
-    with subprocess.Popen(
+    # Benchmarks print this pattern to report throughput samples
+    throughput_pattern = re.compile(r'Secs:\d+ Gb/s:(\d+\.\d+)')
+
+    # We'll gather samples as the benchmark runs
+    throughput_samples = []
+    cpu_samples = []
+    mem_samples = []
+
+    # use psutil (instead of subprocess.Popen) so we can gather process stats
+    with psutil.Popen(
         cmd_args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,  # line-buffered
     ) as p:
-        lines = []
         assert p.stdout is not None  # satisfy type checker
+        cpu_count = psutil.cpu_count()
+        p.cpu_percent()  # initial call always returns 0
+
         for line in p.stdout:
-            lines.append(line)
-            print(line, end='', flush=True)
+            throughput_match = throughput_pattern.match(line)
+            if throughput_match:
+                # whenever benchmark prints the throughput line
+                # gather CPU and Mem stats too
+                throughput = float(throughput_match.group(1))
+                with p.oneshot():
+                    cpu_percent = p.cpu_percent()
+                    if cpu_percent != 0:
+                        cpu_percent /= cpu_count
+
+                    mem_mebibytes = p.memory_info().rss
+                    if mem_mebibytes != 0:
+                        mem_mebibytes /= (1024 * 1024)
+
+                throughput_samples.append(throughput)
+                cpu_samples.append(cpu_percent)
+                mem_samples.append(mem_mebibytes)
+                print(
+                    f"Secs:{len(throughput_samples)} Gb/s:{throughput:.6f} CPU%:{cpu_percent:.1f} RSS(MiB):{mem_mebibytes:.1f}", flush=True)
+
+            else:
+                print(line, end='', flush=True)
 
         p.wait()  # ensure process is 100% finished
 
-        completed = subprocess.CompletedProcess(
-            args=cmd_args,
-            returncode=p.returncode,
-            stdout="".join(lines),
-        )
+        if p.returncode != 0:
+            print(f"EXIT-CODE={p.returncode} BUT CONTINUE...")
 
-        if completed.returncode != 0:
-            if check:
-                exit(f"FAILED running: {subprocess.list2cmdline(cmd_args)}")
-            else:
-                print(f"EXIT-CODE={completed.returncode} BUT CONTINUE...")
-
-        return completed
-
-
-def concurrency_range(min_val, max_val):
-    all = [min_val]
-
-    # keep doubling the value (but if it's too big, add a step in-between too)
-    while all[-1] <= max_val:
-        last = all[-1]
-        double = last * 2
-        step_size = double - last
-        if step_size >= 50:
-            all.append(int(last + step_size / 2))
-        all.append(int(double))
-
-    # ensure we end with max_val
-    while all[-1] > max_val:
-        all.pop()
-    if all[-1] != max_val:
-        all.append(max_val)
-
-    return all
-
-
-def median_throughput(stdout):
-    samples = []
-    for line in stdout.splitlines():
-        m = re.match(r'Secs:\d+ Gb/s:(\d+\.\d+)', line)
-        if m:
-            samples.append(float(m.group(1)))
-
-    # if this run completely failed, just report 0 and move on
-    if not samples:
-        return 0.0
-
-    return statistics.median(samples)
+    return (median(throughput_samples), median(cpu_samples), median(mem_samples))
 
 
 if __name__ == '__main__':
@@ -118,18 +105,14 @@ if __name__ == '__main__':
         url = presign_run.stdout.strip()
 
     with open(args.csv, 'w') as csv:
-        csv.write("CLIENT,CONCURRENCY,THROUGHPUT\n")
+        csv.write("CLIENT\tCONCURRENCY\tTHROUGHPUT(Gb/s)\tCPU(%)\tMEM(MiB)\n")
 
         for client in args.clients:
-            for concurrency in concurrency_range(args.min_concurrency, args.max_concurrency):
-                duration_secs = args.samples
-
-                result = run([CLIENTS[client]['bin'], str(concurrency), str(duration_secs), url],
-                             # ignore errors, keep going...
-                             check=False)
-                throughput = median_throughput(result.stdout)
-
-                csv.write(f"{client},{concurrency},{throughput}\n")
+            for concurrency in args.concurrencies:
+                throughput, cpu, mem = run_benchmark(
+                    [CLIENTS[client]['bin'], str(concurrency), str(args.secs), url])
+                csv.write(
+                    f"{client}\t{concurrency}\t{throughput:.6f}\t{cpu:.1f}\t{mem:.1f}\n")
                 csv.flush()
 
     print("DONE!")
