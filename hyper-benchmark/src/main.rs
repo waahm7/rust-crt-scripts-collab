@@ -1,18 +1,28 @@
+use bytes::Bytes;
+use clap::{Parser, ValueEnum};
+use http_body_util::BodyExt;
+use hyper::{Method, Request, Uri};
+use hyper_tls::HttpsConnector;
+use hyper::header::{CONTENT_TYPE, CONTENT_LENGTH};
+
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use std::{
+    iter::repeat_with,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
-
-use bytes::Bytes;
-use clap::Parser;
-use http::Uri;
-use http_body_util::BodyExt;
-use hyper_tls::HttpsConnector;
-use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use tokio::{task::JoinSet, time::sleep};
+
+#[derive(ValueEnum, Clone)]
+enum TaskType {
+    #[clap(name = "upload", help = "run upload benchmark")]
+    Upload,
+    #[clap(name = "download", help = "run download benchmark")]
+    Download,
+}
 
 #[derive(Parser)]
 #[command()]
@@ -23,6 +33,8 @@ struct Args {
     duration_secs: u64,
     #[arg(help = "presigned URL")]
     presigned_url: String,
+    #[arg(value_enum, help = "Which benchmark to run? i.e upload or download")]
+    action: TaskType,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -38,35 +50,54 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-type HttpClient = Client<
+type DownloadHttpClient = Client<
     HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     http_body_util::Empty<Bytes>,
+>;
+type UploadHttpClient = Client<
+    HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    http_body_util::Full<Bytes>,
 >;
 
 struct Context {
     duration: Duration,
     url: Uri,
-    client: HttpClient,
+    download_client: DownloadHttpClient,
+    upload_client: UploadHttpClient,
     is_running: AtomicBool,
     bytes_transferred: AtomicU64,
+    random_data_for_upload: Bytes,
 }
-
 async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let https = HttpsConnector::new();
-    let client =
-        Client::builder(TokioExecutor::new()).build::<_, http_body_util::Empty<Bytes>>(https);
+    let download_client = Client::builder(TokioExecutor::new())
+        .build::<_, http_body_util::Empty<Bytes>>(HttpsConnector::new());
+
+    let upload_client = Client::builder(TokioExecutor::new())
+        .build::<_, http_body_util::Full<Bytes>>(HttpsConnector::new());
+
+    let random_data_for_upload: Bytes = {
+        let mut rng = fastrand::Rng::new();
+        // TODO: take the size as input
+        let data: Vec<u8> = repeat_with(|| rng.u8(..)).take(8 * 1024 * 1024).collect();
+        data.into()
+    };
 
     let ctx = Arc::new(Context {
         duration: Duration::from_secs(args.duration_secs),
         url: args.presigned_url.parse()?,
-        client,
+        download_client,
+        upload_client,
         is_running: AtomicBool::new(true),
         bytes_transferred: AtomicU64::new(0),
+        random_data_for_upload,
     });
 
     let mut tasks = JoinSet::new();
     for _ in 0..args.concurrency {
-        tasks.spawn(worker_task(ctx.clone()));
+        match args.action {
+            TaskType::Upload => tasks.spawn(upload_task(ctx.clone())),
+            TaskType::Download => tasks.spawn(download_task(ctx.clone())),
+        };
     }
 
     tasks.spawn(timekeeper_task(ctx.clone()));
@@ -78,10 +109,63 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     Ok(())
 }
 
-// Keep doing HTTP requests until ctx.is_running becomes false.
-async fn worker_task(ctx: Arc<Context>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn upload_task(ctx: Arc<Context>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+     // Define the boundary for the multipart form data
+    let boundary = "my_boundary";
+    
+    // Construct the multipart body manually
+    let mut body = Vec::new();
+
+    // Add the first part (text fields)
+    body.extend(format!("--{}\r\n", boundary).as_bytes());
+    body.extend(b"Content-Disposition: form-data; name=\"key\"\r\n\r\n");
+    body.extend(b"test-rust-upload.txt\r\n");
+
+    body.extend(format!("--{}\r\n", boundary).as_bytes());
+    body.extend(b"Content-Disposition: form-data; name=\"AWSAccessKeyId\"\r\n\r\n");
+    body.extend(b"\r\n");
+
+    body.extend(format!("--{}\r\n", boundary).as_bytes());
+    body.extend(b"Content-Disposition: form-data; name=\"policy\"\r\n\r\n");
+    body.extend(b"\r\n");
+
+    body.extend(format!("--{}\r\n", boundary).as_bytes());
+    body.extend(b"Content-Disposition: form-data; name=\"signature\"\r\n\r\n");
+    body.extend(b"\r\n");
+
+    // Add the file part
+    body.extend(format!("--{}\r\n", boundary).as_bytes());
+    body.extend(b"Content-Disposition: form-data; name=\"file\"; filename=\"test-rust-upload.txt\"\r\n");
+    body.extend(b"Content-Type: application/octet-stream\r\n\r\n");
+
+    // Create a buffer of 8MB and add it to the body
+    body.extend(&ctx.random_data_for_upload.clone());
+    body.extend(b"\r\n");
+
+    // End the multipart form data
+    body.extend(format!("--{}--\r\n", boundary).as_bytes());
+    
+    let bytes: Bytes = body.into();
+    let uri = &ctx.url;  // Borrow the URL outside the loop
+
     while ctx.is_running.load(Ordering::SeqCst) {
-        let mut response = ctx.client.get(ctx.url.clone()).await?;
+     let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)  // Set your URI here
+        .header(CONTENT_TYPE, format!("multipart/form-data; boundary={}", boundary))
+        .header(CONTENT_LENGTH, bytes.len().to_string())
+        .body(bytes.clone().into())?;
+        let response = ctx.upload_client.request(request).await?; 
+        if response.status() == 200 || response.status() == 206 {
+            ctx.bytes_transferred.fetch_add(ctx.random_data_for_upload.len() as u64, Ordering::SeqCst);
+        }
+    }
+    Ok(())
+}
+// Keep doing HTTP requests until ctx.is_running becomes false.
+async fn download_task(ctx: Arc<Context>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    while ctx.is_running.load(Ordering::SeqCst) {
+        let mut response = ctx.download_client.get(ctx.url.clone()).await?;
         while let Some(frame_result) = response.body_mut().frame().await {
             let frame = frame_result?;
             if let Some(bytes) = frame.data_ref() {
