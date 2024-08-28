@@ -120,13 +120,13 @@ class BenchmarkRunner
 
     ~BenchmarkRunner()
     {
-        aws_http_message_release(this->requestMsg);
         aws_http_connection_manager_release(this->connectionManager);
         aws_tls_ctx_release(this->tlsCtx);
         aws_client_bootstrap_release(this->clientBootstrap);
         aws_host_resolver_release(this->hostResolver);
         aws_event_loop_group_release(this->eventLoopGroup);
         aws_http_library_clean_up();
+        aws_http_message_release(this->requestMsg);
         aws_logger_clean_up(&this->logger);
     }
 
@@ -150,6 +150,7 @@ class BenchmarkRunner
             double gigabits = bits / 1000000000.0;
             double gigabitsPerSec = gigabits / elapsedSecs.count();
             printf("Secs:%d Gb/s:%f\n", sec + 1, gigabitsPerSec);
+            fflush(stdout);
         }
         this->isRunning.store(false);
 
