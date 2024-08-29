@@ -122,6 +122,7 @@ class BenchmarkRunner
             aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("GET"));
         } else if(strcmp(action, "upload") == 0) {
             aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("PUT"));
+            // TODO: take upload_size as input
             size_t upload_size = 8 * 1024 * 1024;
 
             aws_http_message_add_header(this->requestMsg, aws_http_header { aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str("8388608") });
