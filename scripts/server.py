@@ -1,9 +1,8 @@
 from aiohttp import web
 
 async def handle_put(request):
-    content_length = request.content_length or 0
-    await request.content.read(content_length)
-    #print(f"Received PUT request with body length: {content_length} bytes")
+    body = await request.content.read()  # Read the entire request body
+    print(f"Received PUT request with body: {len(body)}")  
     return web.Response(status=200)
 
 async def init_app():
