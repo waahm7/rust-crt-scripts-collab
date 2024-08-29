@@ -31,10 +31,10 @@ struct Args {
     concurrency: usize,
     #[arg(help = "# seconds to run benchmark")]
     duration_secs: u64,
-    #[arg(help = "presigned URL")]
-    presigned_url: String,
     #[arg(value_enum, help = "Which benchmark to run? i.e upload or download")]
     action: TaskType,
+    #[arg(help = "presigned URL")]
+    presigned_url: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
