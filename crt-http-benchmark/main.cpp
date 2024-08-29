@@ -1,10 +1,10 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <random>
 #include <semaphore>
 #include <thread>
-#include <algorithm>
-#include <random>
 
 #include <aws/common/uri.h>
 #include <aws/http/connection_manager.h>
@@ -13,8 +13,8 @@
 #include <aws/io/event_loop.h>
 #include <aws/io/host_resolver.h>
 #include <aws/io/socket.h>
-#include <aws/io/tls_channel_handler.h>
 #include <aws/io/stream.h>
+#include <aws/io/tls_channel_handler.h>
 
 using namespace std;
 using namespace std::chrono;
@@ -32,6 +32,7 @@ class BenchmarkRunner
     // CLI Args
     int durationSecs;
     aws_uri uri;
+    const char *action;
 
     // CRT boilerplate
     aws_allocator *alloc;
@@ -41,17 +42,20 @@ class BenchmarkRunner
     aws_client_bootstrap *clientBootstrap;
     aws_tls_ctx *tlsCtx;
     aws_http_connection_manager *connectionManager;
-    aws_http_message *requestMsg;
+    std::vector<uint8_t> randomDataForUpload;
 
     // Running state
     atomic<bool> isRunning;
     atomic<uint64_t> bytesTransferred;
     counting_semaphore<INT_MAX> concurrencySemaphore;
 
-    BenchmarkRunner(int concurrency, int durationSecs, const char *action, const char *uri_cstr) : concurrencySemaphore(concurrency)
+    BenchmarkRunner(int concurrency, int durationSecs, const char *action, const char *uri_cstr)
+        : concurrencySemaphore(concurrency)
     {
+        printf("%s:%s\n", action, uri_cstr);
         this->durationSecs = durationSecs;
         this->alloc = aws_default_allocator();
+        this->action = action;
 
         aws_http_library_init(alloc);
 
@@ -99,49 +103,27 @@ class BenchmarkRunner
         sockOpts.connect_timeout_ms = 10000;
 
         uint32_t port = aws_uri_port(&this->uri);
+        bool is_https = aws_byte_cursor_eq_c_str_ignore_case(aws_uri_scheme(&this->uri), "https");
         if (port == 0)
-            port = aws_byte_cursor_eq_c_str_ignore_case(aws_uri_scheme(&this->uri), "https") ? 443 : 80;
-
+            port = is_https ? 443 : 80;
+        printf("port:%d\n", port);
         aws_http_connection_manager_options connMgrOpts;
         AWS_ZERO_STRUCT(connMgrOpts);
         connMgrOpts.bootstrap = this->clientBootstrap;
         connMgrOpts.socket_options = &sockOpts;
-        connMgrOpts.tls_connection_options = &tlsConnOpts;
+        if (is_https)
+            connMgrOpts.tls_connection_options = &tlsConnOpts;
         connMgrOpts.host = *aws_uri_host_name(&this->uri);
         connMgrOpts.port = port;
         connMgrOpts.max_connections = static_cast<size_t>(concurrency);
         this->connectionManager = aws_http_connection_manager_new(alloc, &connMgrOpts);
         AWS_FATAL_ASSERT(this->connectionManager != NULL);
-
-        this->requestMsg = aws_http_message_new_request(alloc);
-        AWS_FATAL_ASSERT(this->requestMsg);
-        aws_http_message_set_request_path(this->requestMsg, *aws_uri_path_and_query(&this->uri));
-        aws_http_message_add_header(
-            this->requestMsg, aws_http_header{aws_byte_cursor_from_c_str("Host"), *aws_uri_host_name(&this->uri)});
-        if(strcmp(action, "download") == 0) {
-            aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("GET"));
-        } else if(strcmp(action, "upload") == 0) {
-            aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("PUT"));
-            // TODO: take upload_size as input
-            size_t upload_size = 8 * 1024 * 1024;
-
-            aws_http_message_add_header(this->requestMsg, aws_http_header { aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str("8388608") });
-        aws_http_message_add_header(
-            
-                this->requestMsg, aws_http_header{ aws_byte_cursor_from_c_str("Content-Type"), aws_byte_cursor_from_c_str("application/octet-stream")});
-
-            std::vector<uint8_t> randomDataForUpload;
-            randomDataForUpload.resize(upload_size);
+        if (strcmp(action, "upload") == 0)
+        {
+            auto upload_size = 8 * 1024 * 1024;
+            this->randomDataForUpload.resize(upload_size);
             independent_bits_engine<default_random_engine, CHAR_BIT, unsigned char> randEngine;
-            generate(randomDataForUpload.begin(), randomDataForUpload.end(), randEngine);
-
-            auto randomDataCursor =
-                aws_byte_cursor_from_array(randomDataForUpload.data(), randomDataForUpload.size());
-            auto inMemoryStreamForUpload = aws_input_stream_new_from_cursor(alloc, &randomDataCursor);
-            aws_http_message_set_body_stream(this->requestMsg, inMemoryStreamForUpload);
-
-        } else {
-            AWS_FATAL_ASSERT(false && "action must be upload or download");
+            generate(this->randomDataForUpload.begin(), this->randomDataForUpload.end(), randEngine);
         }
     }
 
@@ -153,7 +135,6 @@ class BenchmarkRunner
         aws_host_resolver_release(this->hostResolver);
         aws_event_loop_group_release(this->eventLoopGroup);
         aws_http_library_clean_up();
-        aws_http_message_release(this->requestMsg);
         aws_logger_clean_up(&this->logger);
     }
 
@@ -222,10 +203,44 @@ class RequestTask
 
         task->connection = connection;
 
+        // create request
+        auto requestMsg = aws_http_message_new_request(task->runner->alloc);
+        AWS_FATAL_ASSERT(requestMsg);
+        aws_http_message_set_request_path(requestMsg, *aws_uri_path_and_query(&task->runner->uri));
+        aws_http_message_add_header(
+            requestMsg, aws_http_header{aws_byte_cursor_from_c_str("Host"), *aws_uri_host_name(&task->runner->uri)});
+        if (strcmp(task->runner->action, "download") == 0)
+        {
+            aws_http_message_set_request_method(requestMsg, aws_byte_cursor_from_c_str("GET"));
+        }
+        else if (strcmp(task->runner->action, "upload") == 0)
+        {
+            aws_http_message_set_request_method(requestMsg, aws_byte_cursor_from_c_str("PUT"));
+            // TODO: take upload_size as input
+            size_t upload_size = 8 * 1024 * 1024;
+
+            aws_http_message_add_header(
+                requestMsg,
+                aws_http_header{aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str("8388608")});
+            aws_http_message_add_header(
+                requestMsg,
+                aws_http_header{
+                    aws_byte_cursor_from_c_str("Content-Type"),
+                    aws_byte_cursor_from_c_str("application/octet-stream")});
+            auto randomDataCursor = aws_byte_cursor_from_array(
+                task->runner->randomDataForUpload.data(), task->runner->randomDataForUpload.size());
+            auto inMemoryStreamForUpload = aws_input_stream_new_from_cursor(task->runner->alloc, &randomDataCursor);
+            aws_http_message_set_body_stream(requestMsg, inMemoryStreamForUpload);
+            aws_input_stream_release(inMemoryStreamForUpload);
+        
+        else
+        {
+           AWS_FATAL_ASSERT(false && "action must be upload or download");
+        }
         aws_http_make_request_options requestOpts;
         AWS_ZERO_STRUCT(requestOpts);
         requestOpts.self_size = sizeof(requestOpts);
-        requestOpts.request = task->runner->requestMsg;
+        requestOpts.request = requestMsg;
         requestOpts.on_complete = &onRequestComplete;
         requestOpts.on_response_body = &onIncomingBody;
         requestOpts.user_data = task;
@@ -257,6 +272,10 @@ class RequestTask
             if (statusCode < 200 || statusCode >= 300)
             {
                 printf("HTTP Status: %d %s\n", statusCode, aws_http_status_text(statusCode));
+            }
+            else if (strcmp(task->runner->action, "upload") == 0)
+            {
+                task->runner->bytesTransferred.fetch_add(8 * 1024 * 1024);
             }
         }
 
