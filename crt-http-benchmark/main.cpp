@@ -52,7 +52,6 @@ class BenchmarkRunner
     BenchmarkRunner(int concurrency, int durationSecs, const char *action, const char *uri_cstr)
         : concurrencySemaphore(concurrency)
     {
-        printf("%s:%s\n", action, uri_cstr);
         this->durationSecs = durationSecs;
         this->alloc = aws_default_allocator();
         this->action = action;
@@ -106,7 +105,6 @@ class BenchmarkRunner
         bool is_https = aws_byte_cursor_eq_c_str_ignore_case(aws_uri_scheme(&this->uri), "https");
         if (port == 0)
             port = is_https ? 443 : 80;
-        printf("port:%d\n", port);
         aws_http_connection_manager_options connMgrOpts;
         AWS_ZERO_STRUCT(connMgrOpts);
         connMgrOpts.bootstrap = this->clientBootstrap;
@@ -232,7 +230,7 @@ class RequestTask
             auto inMemoryStreamForUpload = aws_input_stream_new_from_cursor(task->runner->alloc, &randomDataCursor);
             aws_http_message_set_body_stream(requestMsg, inMemoryStreamForUpload);
             aws_input_stream_release(inMemoryStreamForUpload);
-        
+        }
         else
         {
            AWS_FATAL_ASSERT(false && "action must be upload or download");

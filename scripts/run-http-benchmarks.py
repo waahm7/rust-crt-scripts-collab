@@ -31,6 +31,9 @@ parser.add_argument(
     '--csv', default='out.csv',
     help='Output results to this file')
 parser.add_argument(
+    '--action', default='upload',
+    help='upload or download workload')
+parser.add_argument(
     '--url', default='s3://graebm-s3-benchmarks/download/8MiB-1x/1',
     help='URL of object to be downloaded. s3:// URLS will get presigned.')
 
@@ -110,7 +113,7 @@ if __name__ == '__main__':
         for client in args.clients:
             for concurrency in args.concurrencies:
                 throughput, cpu, mem = run_benchmark(
-                    [CLIENTS[client]['bin'], str(concurrency), str(args.secs), url])
+                    [CLIENTS[client]['bin'], str(concurrency), str(args.secs), str(args.action), url])
                 csv.write(
                     f"{client}\t{concurrency}\t{throughput:.6f}\t{cpu:.1f}\t{mem:.1f}\n")
                 csv.flush()
