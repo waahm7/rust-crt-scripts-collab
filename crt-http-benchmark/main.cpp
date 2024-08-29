@@ -3,6 +3,8 @@
 #include <iostream>
 #include <semaphore>
 #include <thread>
+#include <algorithm>
+#include <random>
 
 #include <aws/common/uri.h>
 #include <aws/http/connection_manager.h>
@@ -12,6 +14,7 @@
 #include <aws/io/host_resolver.h>
 #include <aws/io/socket.h>
 #include <aws/io/tls_channel_handler.h>
+#include <aws/io/stream.h>
 
 using namespace std;
 using namespace std::chrono;
@@ -45,7 +48,7 @@ class BenchmarkRunner
     atomic<uint64_t> bytesTransferred;
     counting_semaphore<INT_MAX> concurrencySemaphore;
 
-    BenchmarkRunner(int concurrency, int durationSecs, const char *uri_cstr) : concurrencySemaphore(concurrency)
+    BenchmarkRunner(int concurrency, int durationSecs, const char *action, const char *uri_cstr) : concurrencySemaphore(concurrency)
     {
         this->durationSecs = durationSecs;
         this->alloc = aws_default_allocator();
@@ -112,10 +115,33 @@ class BenchmarkRunner
 
         this->requestMsg = aws_http_message_new_request(alloc);
         AWS_FATAL_ASSERT(this->requestMsg);
-        aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("GET"));
         aws_http_message_set_request_path(this->requestMsg, *aws_uri_path_and_query(&this->uri));
         aws_http_message_add_header(
             this->requestMsg, aws_http_header{aws_byte_cursor_from_c_str("Host"), *aws_uri_host_name(&this->uri)});
+        if(strcmp(action, "download") == 0) {
+            aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("GET"));
+        } else if(strcmp(action, "upload") == 0) {
+            aws_http_message_set_request_method(this->requestMsg, aws_byte_cursor_from_c_str("PUT"));
+            size_t upload_size = 8 * 1024 * 1024;
+
+            aws_http_message_add_header(this->requestMsg, aws_http_header { aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str("8388608") });
+        aws_http_message_add_header(
+            
+                this->requestMsg, aws_http_header{ aws_byte_cursor_from_c_str("Content-Type"), aws_byte_cursor_from_c_str("application/octet-stream")});
+
+            std::vector<uint8_t> randomDataForUpload;
+            randomDataForUpload.resize(upload_size);
+            independent_bits_engine<default_random_engine, CHAR_BIT, unsigned char> randEngine;
+            generate(randomDataForUpload.begin(), randomDataForUpload.end(), randEngine);
+
+            auto randomDataCursor =
+                aws_byte_cursor_from_array(randomDataForUpload.data(), randomDataForUpload.size());
+            auto inMemoryStreamForUpload = aws_input_stream_new_from_cursor(alloc, &randomDataCursor);
+            aws_http_message_set_body_stream(this->requestMsg, inMemoryStreamForUpload);
+
+        } else {
+            AWS_FATAL_ASSERT(false && "action must be upload or download");
+        }
     }
 
     ~BenchmarkRunner()
@@ -261,14 +287,15 @@ void BenchmarkRunner::workSubmissionThreadFn(BenchmarkRunner *runner)
 
 int main(int argc, const char **argv)
 {
-    if (argc != 4)
+    if (argc != 5)
     {
-        fail(string("usage: ") + argv[0] + " CONCURRENCY DURATION_SECS URL");
+        fail(string("usage: ") + argv[0] + " CONCURRENCY DURATION_SECS ACTION URL");
     }
     int concurrency = stoi(argv[1]);
     int durationSecs = stoi(argv[2]);
-    const char *uri = argv[3];
+    const char *action = argv[3];
+    const char *uri = argv[4];
 
-    auto runner = BenchmarkRunner(concurrency, durationSecs, uri);
+    auto runner = BenchmarkRunner(concurrency, durationSecs, action, uri);
     runner.run();
 }
