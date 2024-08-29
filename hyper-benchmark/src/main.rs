@@ -118,7 +118,7 @@ async fn upload_task(
     let length = ctx.random_data_for_upload.len();
     let put_request :Request<Full<Bytes>> = Request::builder()
         .method(Method::PUT)
-        .uri(ctx.url.clone()) // Set your URI here
+        .uri(ctx.url.clone()) 
         .header(CONTENT_LENGTH, length.to_string())
         .body(ctx.random_data_for_upload.clone().into())?;
 
