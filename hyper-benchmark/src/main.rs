@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+// TODO: use the same client for download and upload
 type DownloadHttpClient = Client<
     HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     http_body_util::Empty<Bytes>,
