@@ -33,6 +33,9 @@ class BenchmarkRunner
     int durationSecs;
     aws_uri uri;
     const char *action;
+    // TODO: take upload size as input
+    int upload_size = 8*1024*1024;
+    const char *upload_size_str = "8388608";
 
     // CRT boilerplate
     aws_allocator *alloc;
@@ -118,8 +121,7 @@ class BenchmarkRunner
         AWS_FATAL_ASSERT(this->connectionManager != NULL);
         if (strcmp(action, "upload") == 0)
         {
-            auto upload_size = 8 * 1024 * 1024;
-            this->randomDataForUpload.resize(upload_size);
+            this->randomDataForUpload.resize(this->upload_size);
             independent_bits_engine<default_random_engine, CHAR_BIT, unsigned char> randEngine;
             generate(this->randomDataForUpload.begin(), this->randomDataForUpload.end(), randEngine);
         }
@@ -214,12 +216,9 @@ class RequestTask
         else if (strcmp(task->runner->action, "upload") == 0)
         {
             aws_http_message_set_request_method(requestMsg, aws_byte_cursor_from_c_str("PUT"));
-            // TODO: take upload_size as input
-            size_t upload_size = 8 * 1024 * 1024;
-
             aws_http_message_add_header(
                 requestMsg,
-                aws_http_header{aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str("8388608")});
+                aws_http_header{aws_byte_cursor_from_c_str("Content-Length"), aws_byte_cursor_from_c_str(task->runner->upload_size_str)});
             aws_http_message_add_header(
                 requestMsg,
                 aws_http_header{
@@ -233,7 +232,7 @@ class RequestTask
         }
         else
         {
-           AWS_FATAL_ASSERT(false && "action must be upload or download");
+            AWS_FATAL_ASSERT(false && "action must be upload or download");
         }
         aws_http_make_request_options requestOpts;
         AWS_ZERO_STRUCT(requestOpts);
