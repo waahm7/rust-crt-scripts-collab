@@ -80,7 +80,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let random_data_for_upload: Bytes = {
         let mut rng = fastrand::Rng::new();
         // TODO: take the size as input
-        let data: Vec<u8> = repeat_with(|| rng.u8(..)).take(8*1024*1024).collect();
+        let data: Vec<u8> = repeat_with(|| rng.u8(..)).take(8 * 1024 * 1024).collect();
         data.into()
     };
 
@@ -97,9 +97,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let mut tasks = JoinSet::new();
     for _ in 0..args.concurrency {
         match args.action {
-            TaskType::Upload => tasks.spawn(upload_task(
-                ctx.clone()
-            )),
+            TaskType::Upload => tasks.spawn(upload_task(ctx.clone())),
             TaskType::Download => tasks.spawn(download_task(ctx.clone())),
         };
     }
@@ -113,13 +111,11 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     Ok(())
 }
 
-async fn upload_task(
-    ctx: Arc<Context>
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn upload_task(ctx: Arc<Context>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let length = ctx.random_data_for_upload.len();
-    let put_request :Request<Full<Bytes>> = Request::builder()
+    let put_request: Request<Full<Bytes>> = Request::builder()
         .method(Method::PUT)
-        .uri(ctx.url.clone()) 
+        .uri(ctx.url.clone())
         .header(CONTENT_LENGTH, length.to_string())
         .body(ctx.random_data_for_upload.clone().into())?;
 
@@ -128,7 +124,7 @@ async fn upload_task(
         let response = ctx.upload_client.request(put_request.clone()).await?;
         if response.status() == 200 {
             ctx.bytes_transferred
-                .fetch_add( length as u64, Ordering::SeqCst);
+                .fetch_add(length as u64, Ordering::SeqCst);
         }
     }
     Ok(())
