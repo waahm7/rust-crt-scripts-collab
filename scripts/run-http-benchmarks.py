@@ -14,6 +14,9 @@ CLIENTS = {
     'rust-hyper': {
         'bin': REPO_DIR/'hyper-benchmark/target/release/hyper-benchmark'
     },
+    'rust-sdk': {
+        'bin': REPO_DIR/'rust-sdk-benchmark/target/release/rust-sdk-benchmark'
+    },
 }
 
 parser = argparse.ArgumentParser("Gather data from HTTP benchmarks")
