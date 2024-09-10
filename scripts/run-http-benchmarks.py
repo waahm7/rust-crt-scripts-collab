@@ -9,13 +9,16 @@ from statistics import median
 REPO_DIR = Path(__file__).parent.parent
 CLIENTS = {
     'crt-http': {
-        'bin': REPO_DIR/'crt-http-benchmark/build/crt-http-benchmark'
+        'cmd': [REPO_DIR/'crt-http-benchmark/build/crt-http-benchmark'],
     },
     'rust-hyper': {
-        'bin': REPO_DIR/'hyper-benchmark/target/release/hyper-benchmark'
+        'cmd': ['cargo', 'run', '--release', '--manifest-path', REPO_DIR/'hyper-benchmark/Cargo.toml', '--'],
     },
     'rust-sdk': {
-        'bin': REPO_DIR/'rust-sdk-benchmark/target/release/rust-sdk-benchmark'
+        'cmd': ['cargo', 'run', '--release', '--manifest-path', REPO_DIR/'rust-sdk-benchmark/Cargo.toml', '--'],
+    },
+    'rust-uring': {
+        'cmd': ['cargo', 'run', '--release', '--manifest-path', REPO_DIR/'uring-benchmark/Cargo.toml', '--'],
     },
 }
 
@@ -113,7 +116,7 @@ if __name__ == '__main__':
         for client in args.clients:
             for concurrency in args.concurrencies:
                 throughput, cpu, mem = run_benchmark(
-                    [CLIENTS[client]['bin'], str(concurrency), str(args.secs), url])
+                    [*CLIENTS[client]['cmd'], str(concurrency), str(args.secs), url])
                 csv.write(
                     f"{client}\t{concurrency}\t{throughput:.6f}\t{cpu:.1f}\t{mem:.1f}\n")
                 csv.flush()
